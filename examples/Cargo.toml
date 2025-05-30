@@ -31,4 +31,5 @@ congee = "0.4.0"
 reqwest = "0.12.15"
 mimalloc = { version = "0.1", default-features = false }
 fastrace-tonic = { version = "0.1", workspace = true }
+time = "0.3.41"
 
