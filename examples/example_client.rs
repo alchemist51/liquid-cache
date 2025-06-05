@@ -14,13 +14,13 @@ use datafusion::config::ConfigOptions;
 struct CliArgs {
     #[arg(
         long,
-        default_value = "SELECT count(*) FROM parquet_table where ___row_id>2000000 AND ___row_id<4000000"
+        default_value = "SELECT SUM(backend_status_code) FROM parquet_table where backend_status_code == 200"
     )]
     query: String,
 
     #[arg(
         long,
-        default_value = "/Users/abandeji/Downloads/generation-1.parquet"
+        default_value = "/Users/abandeji/Public/workplace/rush_exploration/output.parquet"
     )]
     file_path: String,
 
@@ -40,9 +40,9 @@ pub async fn main() -> Result<()> {
         .build(SessionConfig::from_env()?)?;
 
     let mut options_mut = ConfigOptions::new();
-    options_mut.execution.parquet.pushdown_filters = true;
-    options_mut.execution.parquet.binary_as_string = true;
-    options_mut.execution.batch_size = 8192 * 2;
+    // options_mut.execution.parquet.pushdown_filters = true;
+    // options_mut.execution.parquet.binary_as_string = true;
+    // options_mut.execution.batch_size = 8192 * 2;
     //config.execution.parquet.reorder_filters = true;
     // let ctx = SessionContext::new_with_config(SessionConfig::from(options_mut));
     //

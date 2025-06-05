@@ -18,15 +18,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         SessionContext::new(),
         Some(1024 * 1024 * 1024 * 4),          // max memory cache size 1GB
         Some(tempfile::tempdir()?.into_path()), // disk cache dir
-        CacheMode::Parquet,
-        CacheEvictionStrategy::Discard,
+        CacheMode::Liquid,
+        CacheEvictionStrategy::Lru,
     )?;
 
     let liquid_cache = Arc::new(liquid_cache);
     let flight = FlightServiceServer::from_arc(liquid_cache.clone());
 
-    let admin_addr: SocketAddr = "127.0.0.1:\
-    ".parse()?;
+    let admin_addr: SocketAddr = "127.0.0.1:8080".parse()?;
     let server_addr: SocketAddr = "0.0.0.0:15214".parse()?;
 
     println!("Starting admin server on {}", admin_addr);

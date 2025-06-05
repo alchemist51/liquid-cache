@@ -129,7 +129,7 @@ impl Benchmark for TpchBenchmark {
             .options_mut()
             .execution
             .parquet
-            .pushdown_filters = true;
+            .pushdown_filters = false;
         let mut session_config = SessionConfig::from_env()?;
         if let Some(partitions) = self.common.partitions {
             session_config.options_mut().execution.target_partitions = partitions;

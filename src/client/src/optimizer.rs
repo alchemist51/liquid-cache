@@ -1,5 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
-
+use std::time::Instant;
 use datafusion::{
     config::ConfigOptions, datasource::source::DataSourceExec, error::Result,
     execution::object_store::ObjectStoreUrl, physical_optimizer::PhysicalOptimizerRule,
@@ -42,12 +42,14 @@ impl PushdownOptimizer {
 
     /// Apply the optimization by finding nodes to push down and wrapping them
     fn optimize_plan(&self, plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+        let start_time = Instant::now();
         // If this node is already a LiquidCacheClientExec, return it as is
         if plan
             .as_any()
             .downcast_ref::<LiquidCacheClientExec>()
             .is_some()
         {
+            print!("Found LiquidCache!");
             return Ok(plan);
         }
 
@@ -55,12 +57,14 @@ impl PushdownOptimizer {
         if let Some(candidate) = find_pushdown_candidate(&plan) {
             // If the current node is the one to be pushed down, wrap it
             if Arc::ptr_eq(&plan, &candidate) {
-                return Ok(Arc::new(LiquidCacheClientExec::new(
+                let r: Result<Arc<dyn ExecutionPlan>> = Ok(Arc::new(LiquidCacheClientExec::new(
                     plan,
                     self.cache_server.clone(),
                     self.cache_mode,
                     self.object_stores.clone(),
                 )));
+                print!("Plan optimised time taken: {:?}", start_time.elapsed());
+                return r;
             }
         }
 
@@ -77,11 +81,14 @@ impl PushdownOptimizer {
         }
 
         // If any children were changed, create a new plan with the updated children
+
+        print!("Returning plan!");
         if children_changed {
             plan.with_new_children(new_children)
         } else {
             Ok(plan)
         }
+
     }
 }
 
@@ -184,7 +191,7 @@ mod tests {
 
     async fn create_session_context() -> SessionContext {
         let mut config = SessionConfig::from_env().unwrap();
-        config.options_mut().execution.parquet.pushdown_filters = true;
+        config.options_mut().execution.parquet.pushdown_filters = false;
         let builder = SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()

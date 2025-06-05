@@ -78,7 +78,7 @@ impl LiquidCacheBuilder {
             .options_mut()
             .execution
             .parquet
-            .pushdown_filters = true;
+            .pushdown_filters = false;
         session_config
             .options_mut()
             .execution
@@ -89,6 +89,9 @@ impl LiquidCacheBuilder {
             .execution
             .parquet
             .binary_as_string = true;
+        session_config.options_mut()
+            .execution.target_partitions = 3;
+
         session_config.options_mut().execution.batch_size = 8192 * 2;
         let session_state = SessionStateBuilder::new()
             .with_config(session_config)

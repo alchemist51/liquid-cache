@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
-use std::time::Duration;
-use std::{any::Any, fmt::Formatter, sync::Arc};
+use std::time::{Duration, Instant};
+use std::{any::Any, fmt::Formatter, sync::Arc, thread};
 
 use arrow::array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -43,6 +43,36 @@ enum PlanRegisterState {
     NotRegistered = 0,
     InProgress = 1,
     Registered = 2,
+}
+
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::fs::File;
+
+pub struct Logger {
+    file: File,
+}
+
+impl Logger {
+    fn new(filename: &str) -> Self {
+        // Get current thread ID
+        let thread_id = thread::current().id();
+
+        // Create filename with thread ID
+        let filename = format!("thread_{:?}.log", thread_id);
+
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(filename)
+            .expect("Failed to open log file");
+
+        Logger { file }
+    }
+
+    fn log(&mut self, message: String) {
+        writeln!(self.file, "{}", message).expect("Failed to write to log file");
+    }
 }
 
 /// The execution plan for the LiquidCache client.
@@ -145,6 +175,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
         partition: usize,
         context: Arc<datafusion::execution::TaskContext>,
     ) -> datafusion::error::Result<datafusion::execution::SendableRecordBatchStream> {
+        let start_time = Instant::now();
         let cache_server = self.cache_server.clone();
         let plan = self.remote_plan.clone();
         let lock = self.plan_registered.clone();
@@ -164,6 +195,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             partition,
             self.object_stores.clone(),
         );
+        print!("Returning the Flight stream: Time Taken: {:?}", start_time.elapsed());
         Ok(Box::pin(FlightStream::new(
             Some(Box::pin(stream)),
             self.remote_plan.schema().clone(),
@@ -229,6 +261,7 @@ async fn flight_stream(
     partition: usize,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
 ) -> Result<SendableRecordBatchStream> {
+    let start_full = Instant::now();
     let channel = flight_channel(server)
         .in_span(Span::enter_with_local_parent("connect_channel"))
         .await?;
@@ -243,6 +276,7 @@ async fn flight_stream(
         Ordering::Relaxed,
     ) {
         Ok(_) => {
+            let timer = Instant::now();
             LocalSpan::add_event(Event::new("register_plan"));
 
             for (url, options) in &object_stores {
@@ -269,14 +303,18 @@ async fn flight_stream(
                 .map_err(to_df_err)?;
             plan_registered.store(PlanRegisterState::Registered as usize, Ordering::Release);
             LocalSpan::add_event(Event::new("register_plan_done"));
+            print!("RegisterPlan Time Inner: {:?}",timer.elapsed());
         }
         Err(_e) => {
+            print!("Finding the plan!");
+            let timer = Instant::now();
             LocalSpan::add_event(Event::new("getting_existing_plan"));
             while plan_registered.load(Ordering::Acquire) != PlanRegisterState::Registered as usize
             {
                 tokio::time::sleep(Duration::from_micros(100)).await;
             }
             LocalSpan::add_event(Event::new("got_existing_plan"));
+            print!("Finding plan time: {:?}", timer.elapsed());
         }
     };
 
@@ -294,6 +332,7 @@ async fn flight_stream(
         FlightRecordBatchStream::new_from_flight_data(response_stream.map_err(|e| e.into()))
             .with_headers(md)
             .map_err(to_df_err);
+    print!("RegisterPlan FullTime: {:?}",start_full.elapsed());
     Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
 }
 
@@ -311,6 +350,8 @@ struct FlightStream {
     metrics: FlightStreamMetrics,
     poll_stream_span: fastrace::Span,
     create_stream_span: Option<fastrace::Span>,
+    start_time: Instant,
+    logger: Logger
 }
 
 impl FlightStream {
@@ -329,30 +370,52 @@ impl FlightStream {
             metrics,
             poll_stream_span,
             create_stream_span: Some(create_stream_span),
+            start_time: Instant::now(),
+            logger: Logger::new("output.log")
         }
     }
 }
 
 use futures::StreamExt;
+use log::logger;
+
 impl FlightStream {
     fn poll_inner(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
         loop {
             match &mut self.state {
                 FlightStreamState::Init => {
+                    self.logger.log(format!("Init-Starting:{:?}", self.start_time.elapsed()));
                     self.metrics.time_reading_total.start();
                     self.state = FlightStreamState::GetStream(self.future_stream.take().unwrap());
+                    self.metrics.start_init_stream_time();
+                    self.metrics.end_get_stream();
+                    self.metrics.end_processing_stream_time();
+                    self.logger.log(format!("Init-Ending:{:?}", self.start_time.elapsed()));
                     continue;
                 }
                 FlightStreamState::GetStream(fut) => {
+                    self.logger.log(format!("Get-Starting:{:?}", self.start_time.elapsed()));
+                    //print!("G");
                     let _guard = self.create_stream_span.as_ref().unwrap().set_local_parent();
                     let stream = ready!(fut.as_mut().poll(cx)).unwrap();
                     self.create_stream_span.take();
                     self.state = FlightStreamState::Processing(stream);
+
+                    self.metrics.end_init_stream_time();
+                    self.metrics.start_get_stream();
+                    self.metrics.end_processing_stream_time();
+                    self.logger.log(format!("Get-Ending:{:?}", self.start_time.elapsed()));
                     continue;
                 }
                 FlightStreamState::Processing(stream) => {
+                    self.logger.log(format!("Process-Starting:{:?}", self.start_time.elapsed()));
                     let result = stream.poll_next_unpin(cx);
                     self.metrics.poll_count.add(1);
+
+                    self.metrics.end_init_stream_time();
+                    self.metrics.end_get_stream();
+                    self.metrics.start_processing_stream_time();
+                    self.logger.log(format!("Process-Ending:{:?}", self.start_time.elapsed()));
                     return result;
                 }
             }
@@ -366,12 +429,16 @@ impl Stream for FlightStream {
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
         let _guard = self.poll_stream_span.set_local_parent();
         self.metrics.time_processing.start();
         let result = self.poll_inner(cx);
         match result {
             Poll::Ready(Some(Ok(batch))) => {
+                let elapsed = self.start_time.elapsed();
+                self.logger.log(format!("Poll-Ready-Batch:Starting:{:?}", elapsed));
+                //print!("R");
+                self.metrics.stop_pending(); // Stop pending timer if it was running
                 let coerced_batch = if let Some(schema_mapper) = &self.schema_mapper {
                     schema_mapper.map_batch(batch).unwrap()
                 } else {
@@ -390,17 +457,29 @@ impl Stream for FlightStream {
                     .add(coerced_batch.get_array_memory_size());
                 self.metrics.time_processing.stop();
                 LocalSpan::add_event(Event::new("emit_batch"));
+                let elapsed = self.start_time.elapsed();
+                self.logger.log(format!("Poll-Ready-Batch:Ending:{:?}", elapsed));
                 Poll::Ready(Some(Ok(coerced_batch)))
             }
             Poll::Ready(None) => {
+                let elapsed = self.start_time.elapsed();
+                self.logger.log(format!("Poll-Ready-None:Starting:{:?}", elapsed));
+                //print!("RN");
                 self.metrics.time_processing.stop();
                 self.metrics.time_reading_total.stop();
+                let elapsed = self.start_time.elapsed();
+                self.logger.log(format!("Poll-Ready-None:Ending:{:?}", elapsed));
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Err(e))) => {
+                //print!("RE");
                 panic!("Error in flight stream: {e:?}");
             }
             Poll::Pending => {
+                let elapsed = self.start_time.elapsed();
+                self.logger.log(format!("Poll-Pending:{:?}", elapsed));
+                //print!("P");
+                self.metrics.start_pending();
                 self.metrics.time_processing.stop();
                 Poll::Pending
             }

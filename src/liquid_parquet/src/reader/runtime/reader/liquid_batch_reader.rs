@@ -175,7 +175,7 @@ impl Iterator for LiquidBatchReader {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(selection) = take_next_batch(&mut self.selection, self.batch_size) {
-            let filtered_selection = self.build_predicate_filter(selection).unwrap();
+            let filtered_selection = selection.into();
             if let Some(record_batch) = self.read_selection(filtered_selection).unwrap() {
                 return Some(Ok(record_batch));
             }

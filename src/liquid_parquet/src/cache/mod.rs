@@ -276,6 +276,36 @@ impl LiquidCachedColumn {
         }
     }
 
+    pub(crate) fn get_arrow_array_with_no_filter(
+        &self,
+        batch_id: BatchID,
+        _filter: &BooleanArray,  // Parameter kept but unused (renamed with _)
+    ) -> Option<ArrayRef> {
+        //println!("getting arrow array without filter");
+        let inner_value = self.cache_store.get(&self.entry_id(batch_id))?;
+        match &inner_value {
+            CachedBatch::ArrowMemory(array) => {
+                //println!("Cached batch of memory arrow");
+                Some(array.clone())
+            }
+            CachedBatch::LiquidMemory(array) => match ABLATION_STUDY_MODE {
+                AblationStudyMode::FullDecoding => {
+                    //println!("Cached batch of memory liquid - full decoding");
+                    Some(array.to_arrow_array())
+                }
+                _ => {
+                    //println!("Cached batch of memory liquid - opposite to full decoding");
+                    Some(array.to_best_arrow_array())
+                }
+            },
+            CachedBatch::OnDiskLiquid => {
+                //println!("On disk liquid");
+                let array = self.read_liquid_from_disk(batch_id);
+                Some(array.to_best_arrow_array())
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn get_arrow_array_test_only(&self, batch_id: BatchID) -> Option<ArrayRef> {
         let cached_entry = self.cache_store.get(&self.entry_id(batch_id))?;
@@ -467,7 +497,7 @@ impl LiquidCachedRowGroup {
             let mut fields = Vec::new();
             for column_id in column_ids {
                 let column = self.get_column(column_id as u64)?;
-                let array = column.get_arrow_array_with_filter(batch_id, &mask)?;
+                let array = column.get_arrow_array_with_no_filter(batch_id, &mask)?;
                 arrays.push(array);
                 fields.push(column.field.clone());
             }
