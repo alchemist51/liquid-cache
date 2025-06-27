@@ -173,7 +173,8 @@ impl CachedArrayReader {
             // Get cached array and apply filter
             let array = match self
                 .liquid_cache
-                .get_arrow_array_with_filter(batch_id, &mask_array)
+                //.get_arrow_array_with_filter(batch_id, &mask_array)
+                .get_arrow_array_with_no_filter(batch_id, &mask_array)
             {
                 Some(array) => array,
                 None => {

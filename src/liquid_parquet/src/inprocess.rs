@@ -111,7 +111,7 @@ impl LiquidCacheInProcessBuilder {
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
     pub fn build(self, mut config: SessionConfig) -> Result<(SessionContext, LiquidCacheRef)> {
-        config.options_mut().execution.parquet.pushdown_filters = true;
+        config.options_mut().execution.parquet.pushdown_filters = false;
         config
             .options_mut()
             .execution

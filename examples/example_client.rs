@@ -1,78 +1,111 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
 use clap::{Parser, command};
 use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
 use liquid_cache_client::LiquidCacheBuilder;
 use liquid_cache_common::CacheMode;
 use std::path::Path;
 use std::sync::Arc;
-use url::Url;
+use std::time::Instant;
+use reqwest;
 
 #[derive(Parser, Clone)]
 #[command(name = "Example Client")]
 struct CliArgs {
-    /// SQL query to execute
     #[arg(
         long,
-        default_value = "SELECT COUNT(*) FROM \"aws-edge-locations\" WHERE \"countryCode\" = 'US';"
+        default_value = "SELECT sum(target_status_code) FROM parquet_table where target_status_code=200"
     )]
     query: String,
 
-    /// URL of the table to query
     #[arg(
         long,
-        default_value = "https://raw.githubusercontent.com/tobilg/aws-edge-locations/main/data/aws-edge-locations.parquet"
+        default_value = "/Users/gbh/Downloads/generation-1-optimized.parquet"
     )]
-    file: String,
+    file_path: String,
 
-    /// Server URL
     #[arg(long, default_value = "http://localhost:15214")]
     cache_server: String,
+}
+
+// select sum(target_status_code) from parquet_table where timestamp>1747469204820 and timestamp<1747469653634 and target_status_code=500
+async fn get_cache_info(admin_port: u16) -> Result<String> {
+    let client = reqwest::Client::new();
+    let url = format!("http://localhost:{}/cache_info", admin_port);
+    let response = client.get(&url).send().await.unwrap();
+    Ok(response.text().await.unwrap())
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
     let args = CliArgs::parse();
-    let url = Url::parse(&args.file).unwrap();
-    let object_store_url = format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
+    let path = Path::new(&args.file_path);
 
     let ctx = LiquidCacheBuilder::new(args.cache_server.clone())
-        .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
+        .with_object_store(ObjectStoreUrl::parse("file:///")?, None)
         .with_cache_mode(CacheMode::Liquid)
         .build(SessionConfig::from_env()?)?;
+
+    //let ctx  = SessionContext::new();
     let ctx = Arc::new(ctx);
 
-    let table_name = Path::new(url.path())
-        .file_stem()
-        .unwrap_or_default()
-        .to_str()
-        .unwrap_or("default");
-    let sql = args.query;
-    let object_store = object_store::http::HttpBuilder::new()
-        .with_url(object_store_url.as_str())
-        .build()
-        .unwrap();
-    let object_store_url = ObjectStoreUrl::parse(object_store_url.as_str()).unwrap();
-    ctx.register_object_store(object_store_url.as_ref(), Arc::new(object_store));
-    ctx.register_parquet(table_name, url.as_ref(), Default::default())
+    let file_path = if path.is_dir() {
+        let entries = std::fs::read_dir(path)?;
+        let first_parquet = entries
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry.path()
+                    .extension()
+                    .map_or(false, |ext| ext == "parquet")
+            })
+            .ok_or_else(|| datafusion::error::DataFusionError::Execution("No parquet files found in directory".to_string()))?;
+        first_parquet.path()
+    } else {
+        path.to_path_buf()
+    };
+
+    println!("Reading from file: {:?}", file_path);
+
+    ctx.register_parquet(
+        "parquet_table",
+        file_path.to_str().unwrap(),
+        Default::default(),
+    )
         .await?;
 
-    ctx.sql(&sql).await?.show().await?;
+    println!("\nInitial cache state:");
+    println!("{}", get_cache_info(8080).await?);
+
+    loop {
+        println!("\nEnter query (or 'exit' to quit):");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+
+        let input = input.trim();
+        if input.eq_ignore_ascii_case("exit") {
+            break;
+        }
+
+        let query = if input.is_empty() { &args.query } else { input };
+
+        println!("Executing query: {}", query);
+        let start = Instant::now();
+
+        match ctx.sql(query).await {
+            Ok(df) => {
+                match df.show().await {
+                    Ok(_) => {
+                        let duration = start.elapsed();
+                        println!("Query completed in: {:?}", duration);
+
+                        // Get cache statistics after query
+                        println!("\nCache state after query:");
+                        println!("{}", get_cache_info(8080).await?);
+                    }
+                    Err(e) => println!("Error showing results: {}", e),
+                }
+            }
+            Err(e) => println!("Error executing query: {}", e),
+        }
+    }
 
     Ok(())
 }

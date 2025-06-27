@@ -86,7 +86,7 @@ impl LiquidCacheBuilder {
             .options_mut()
             .execution
             .parquet
-            .pushdown_filters = true;
+            .pushdown_filters = false;
         session_config
             .options_mut()
             .execution

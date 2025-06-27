@@ -184,7 +184,7 @@ mod tests {
 
     async fn create_session_context() -> SessionContext {
         let mut config = SessionConfig::from_env().unwrap();
-        config.options_mut().execution.parquet.pushdown_filters = true;
+        config.options_mut().execution.parquet.pushdown_filters = false;
         let builder = SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()

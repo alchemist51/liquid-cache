@@ -163,26 +163,27 @@ impl FileOpener for LiquidParquetOpener {
             );
 
             // Filter pushdown: evaluate predicates during scan
-            let row_filter = predicate.as_ref().and_then(|p| {
-                let row_filter = row_filter::build_row_filter(
-                    p,
-                    &physical_file_schema,
-                    &downstream_full_schema,
-                    builder.metadata(),
-                    reorder_predicates,
-                    &file_metrics,
-                    &schema_adapter_factory,
-                );
+            let row_filter = None;
 
-                match row_filter {
-                    Ok(Some(filter)) => Some(filter),
-                    Ok(None) => None,
-                    Err(e) => {
-                        debug!("Ignoring error building row filter for '{predicate:?}': {e:?}");
-                        None
-                    }
-                }
-            });
+            //     predicate.as_ref().and_then(|p| {
+            //     let row_filter = row_filter::build_row_filter(
+            //         p,
+            //         &cache_schema,
+            //         &client_schema,
+            //         builder.metadata(),
+            //         reorder_predicates,
+            //         &file_metrics,
+            //     );
+            //
+            //     match row_filter {
+            //         Ok(Some(filter)) => Some(filter),
+            //         Ok(None) => None,
+            //         Err(e) => {
+            //             debug!("Ignoring error building row filter for '{predicate:?}': {e:?}");
+            //             None
+            //         }
+            //     }
+            // });
 
             // Determine which row groups to actually read. The idea is to skip
             // as many row groups as possible based on the metadata and query
